@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MediaPipe 手勢接球遊戲 - 挑戰版</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+
+    <style>
+        body { margin: 0; overflow: hidden; background: #1a1a1a; font-family: sans-serif; }
+        #ui-container {
+            position: absolute; top: 20px; left: 20px; color: white; z-index: 10;
+        }
+        .stat-box {
+            background: rgba(0, 0, 0, 0.7);
+            padding: 15px 25px;
+            border-radius: 12px;
+            border: 2px solid #00d2ff;
+            box-shadow: 0 0 15px rgba(0, 210, 255, 0.3);
+        }
+        #score { font-size: 36px; font-weight: bold; color: #00d2ff; }
+        #msg { color: #ff4757; font-weight: bold; margin-top: 5px; min-height: 24px; }
+        #loading {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: white; text-align: center;
+        }
+        canvas { display: block; }
+        #input_video { display: none; }
+    </style>
+</head>
+<body>
+
+    <div id="loading"><h2>模型載入中...</h2></div>
+
+    <div id="ui-container">
+        <div class="stat-box">
+            得分: <span id="score">0</span>
+            <div id="msg"></div>
+        </div>
+    </div>
+    
+    <video id="input_video"></video>
+    <canvas id="output_canvas"></canvas>
+
+    <script>
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const scoreElement = document.getElementById('score');
+        const msgElement = document.getElementById('msg');
+        const loadingElement = document.getElementById('loading');
+
+        let score = 0;
+        let balls = [];
+        let fingerPos = { x: -100, y: -100 };
+
+        function showMessage(text) {
+            msgElement.innerText = text;
+            setTimeout(() => { if(msgElement.innerText === text) msgElement.innerText = ''; }, 1000);
+        }
+
+        function resize() {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        // 強化版球類別：區分「獎勵球」與「炸彈」
+        class GameObject {
+            constructor() {
+                this.type = Math.random() < 0.2 ? 'bomb' : 'good'; // 20% 機率生成炸彈
+                this.radius = this.type === 'bomb' ? 20 : 15 + Math.random() * 15;
+                this.x = Math.random() * canvasElement.width;
+                this.y = -this.radius;
+                this.speed = (this.type === 'bomb' ? 5 : 3) + Math.random() * 5;
+                this.color = this.type === 'bomb' ? '#000000' : `hsl(${Math.random() * 360}, 80%, 60%)`;
+            }
+            update() {
+                this.y += this.speed;
+            }
+            draw() {
+                canvasCtx.beginPath();
+                canvasCtx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                canvasCtx.fillStyle = this.color;
+                
+                if (this.type === 'bomb') {
+                    canvasCtx.shadowBlur = 10;
+                    canvasCtx.shadowColor = "red";
+                    canvasCtx.strokeStyle = "red";
+                    canvasCtx.lineWidth = 3;
+                    canvasCtx.stroke();
+                } else {
+                    canvasCtx.shadowBlur = 15;
+                    canvasCtx.shadowColor = this.color;
+                }
+                
+                canvasCtx.fill();
+                canvasCtx.closePath();
+                canvasCtx.shadowBlur = 0;
+            }
+        }
+
+        function onResults(results) {
+            loadingElement.style.display = 'none';
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            // 鏡像背景繪製
+            canvasCtx.translate(canvasElement.width, 0);
+            canvasCtx.scale(-1, 1);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.restore();
+
+            // 手指追蹤與座標修正
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const hand = results.multiHandLandmarks[0];
+                fingerPos.x = (1 - hand[8].x) * canvasElement.width;
+                fingerPos.y = hand[8].y * canvasElement.height;
+
+                canvasCtx.beginPath();
+                canvasCtx.arc(fingerPos.x, fingerPos.y, 15, 0, Math.PI * 2);
+                canvasCtx.fillStyle = "white";
+                canvasCtx.stroke();
+                canvasCtx.fill();
+            }
+
+            // 物件管理
+            if (Math.random() < 0.05) balls.push(new GameObject());
+
+            for (let i = balls.length - 1; i >= 0; i--) {
+                balls[i].update();
+                balls[i].draw();
+
+                const dx = balls[i].x - fingerPos.x;
+                const dy = balls[i].y - fingerPos.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+
+                // 碰撞判定
+                if (distance < balls[i].radius + 15) {
+                    if (balls[i].type === 'bomb') {
+                        score = Math.max(0, score - 50); // 碰到炸彈扣 50
+                        showMessage("💥 炸彈！ -50");
+                    } else {
+                        score += 10; // 接到球加 10
+                    }
+                    scoreElement.innerText = score;
+                    balls.splice(i, 1);
+                    continue;
+                }
+
+                // 漏接判定
+                if (balls[i].y > canvasElement.height + 50) {
+                    if (balls[i].type === 'good') {
+                        score = Math.max(0, score - 5); // 漏接球扣 5
+                        showMessage("Miss! -5");
+                        scoreElement.innerText = score;
+                    }
+                    balls.splice(i, 1);
+                }
+            }
+        }
+
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.7 });
+        hands.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({image: videoElement}); },
+            width: 1280, height: 720
+        });
+        camera.start();
+    </script>
+</body>
+</html>
